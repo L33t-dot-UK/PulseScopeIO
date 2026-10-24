@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="480" height="160" viewBox="0 0 480 160" role="img" aria-labelledby="title desc">
+<title id="title">Pulse Scope IO</title><desc id="desc">A cyan encoder pulse inside an oscilloscope ring beside the Pulse Scope IO wordmark.</desc>
+<rect width="480" height="160" rx="16" fill="#10182a"/>
+<circle cx="80" cy="80" r="53" fill="#121a2d" stroke="#4dd6e8" stroke-width="3"/>
+<path d="M80 32v12m0 72v12M32 80h12m72 0h12" stroke="#405578" stroke-width="2"/>
+<path d="M40 91h19V64h22v32h22V69h18" fill="none" stroke="#4dd6e8" stroke-width="5" stroke-linejoin="round"/>
+<circle cx="121" cy="69" r="4" fill="#ffb454"/>
+<text x="153" y="75" fill="#e7edf8" font-family="Arial,Helvetica,sans-serif" font-weight="700" font-size="36">Pulse Scope <tspan fill="#4dd6e8">IO</tspan></text>
+<text x="155" y="103" fill="#9eacc5" font-family="Arial,Helvetica,sans-serif" font-size="13" letter-spacing="2">WHERE EVERY PULSE COUNTS</text>
+</svg>

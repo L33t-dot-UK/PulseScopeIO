@@ -1,0 +1,135 @@
+'use strict';
+const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
+const source=fs.readFileSync('static/app.js','utf8');
+function harness(){
+ const elements=new Map(),timers=[],requests=[],downloads=[],storage=new Map();let error=null,reloads=0,cache={bytes:2048,files:3,busy:false,clearing:false,revision:'cache-1'},clearError=null;
+ function el(id){if(!elements.has(id))elements.set(id,{value:'1',checked:false,disabled:false,open:false,style:{},parentElement:{},attributes:{},textContent:'',classList:{flags:new Set(),toggle(n,on){on?this.flags.add(n):this.flags.delete(n)}},setAttribute(k,v){this.attributes[k]=v},removeAttribute(k){delete this.attributes[k]},listeners:{},addEventListener(name,fn){(this.listeners[name]??=[]).push(fn)},emit(name,event={}){for(const fn of this.listeners[name]||[])fn(event)},showModal(){this.open=true},close(){const wasOpen=this.open;this.open=false;if(wasOpen)this.emit('close')},click(){return this.onclick?.()}});return elements.get(id)}
+ const context={document:{querySelector:el,querySelectorAll:()=>[],createElement:()=>({click(){downloads.push(this.href)}})},window:{location:{reload(){reloads++}},sessionStorage:{setItem(k,v){storage.set(k,v)},getItem(k){return storage.get(k)},removeItem(k){storage.delete(k)}}},devicePixelRatio:1,setTimeout(fn){timers.push(fn);return timers.length},clearTimeout(){},fetch:async(url,options)=>{requests.push({url,options});return {ok:!(url==='/api/clear-cache'&&clearError),json:async()=>url==='/api/cache'?cache:url==='/api/clear-cache'?(clearError?{error:clearError}:{bytes:0,files:0,busy:false,clearing:false,revision:'cache-2',complete:true,deleted_bytes:2048,errors:[]}):url==='/api/session'?{token:'test'}:url==='/api/prepare-export'?{export:'download1'}:url.startsWith('/api/export-status')?{ready:true}:url.startsWith('/api/status')?{progress:.2,stage:'Importing full recording',ready:false,error}: {id:'new-job'}}}};
+ vm.createContext(context);vm.runInContext(source,context);return {context,el,timers,requests,downloads,setError(v){error=v},setCache(v){cache=v},setClearError(v){clearError=v},reloads:()=>reloads,storage};
+}
+const flush=()=>new Promise(resolve=>setImmediate(resolve));
+(async()=>{
+ let h=harness();vm.runInContext("showLoading('analysis','Loading','Opening');updateLoading('analysis',.42,'Analysing')",h.context);
+ assert.equal(h.el('#loadingOverlay').open,true);assert.equal(h.el('#loadingPercent').textContent,'42%');assert.equal(h.el('#loadingProgress').attributes['aria-valuenow'],'42');
+ vm.runInContext("showLoading('export','Export','Preparing');hideLoading('analysis')",h.context);assert.equal(h.el('#loadingOverlay').open,true);assert.equal(h.el('#loadingRing').classList.flags.has('indeterminate'),true);
+ vm.runInContext("hideLoading('export')",h.context);assert.equal(h.el('#loadingOverlay').open,false);
+ h=harness();vm.runInContext("summary={id:'old-job'};job='old-job'",h.context);h.el('#smoothWindow').onchange();assert.equal(h.el('#loadingOverlay').open,false);h.timers.shift()();await flush();assert.equal(h.el('#loadingOverlay').open,false);assert(h.requests.some(r=>r.url==='/api/reanalyse'));
+ h=harness();vm.runInContext("summary={id:'old-job'};job='old-job'",h.context);await vm.runInContext('reanalyse(false,null,true)',h.context);await flush();assert.equal(h.el('#loadingOverlay').open,true);
+ h.el('#loadingCancel').onclick();await flush();assert(h.requests.some(r=>r.url==='/api/cancel'));h.setError('Analysis cancelled');await vm.runInContext('poll()',h.context);assert.equal(h.el('#loadingOverlay').open,false);assert.equal(h.el('#loadingOverlay').attributes['aria-hidden'],'true');
+ h=harness();vm.runInContext("summary={id:'old-job'};job='old-job'",h.context);await h.el('#exportCsv').onclick();assert.equal(h.el('#loadingOverlay').open,false);assert.equal(h.downloads[0],'/api/export-file?id=old-job&export=download1');
+ h=harness();h.el('#rawPlot').checked=true;h.el('#smoothEdges').checked=true;h.el('#smoothEdges').onchange();assert.equal(h.el('#rawPlot').checked,false);assert.equal(h.el('#rawPlot').disabled,true);
+ h.el('#smoothEdges').checked=false;h.el('#smoothEdges').onchange();assert.equal(h.el('#rawPlot').disabled,false);assert.equal(h.el('#rawPlot').checked,false);
+ h=harness();h.el('#mergePathA').value='A.csv';h.el('#mergePathB').value='B.csv';h.el('#mergePathC').value='C.csv';
+ const checkTask=h.el('#mergeCaptures').onclick();await flush();
+ assert.equal(h.el('#alignmentChoiceDialog').open,true);assert.equal(h.el('#loadingOverlay').open,false);assert(!h.requests.some(r=>r.url==='/api/merge'));assert.equal(h.el('#mergeCaptures').disabled,true);
+ await h.el('#mergeCaptures').onclick();assert.equal(h.el('#alignmentChoiceDialog').open,true);assert(!h.requests.some(r=>r.url==='/api/merge'));
+ // The dialog owns a snapshot: later field edits cannot change the request being approved.
+ h.el('#mergePathA').value='changed.csv';h.el('#mergePathC').value='changed-reference.csv';h.el('#lowThreshold').value='9';
+ h.el('#alignmentCheckOnly').onclick();await checkTask;await flush();
+ const merge=h.requests.find(r=>r.url==='/api/merge');assert(merge);const checkBody=JSON.parse(merge.options.body);assert.equal(checkBody.path_a,'A.csv');assert.equal(checkBody.path_b,'B.csv');assert.equal(checkBody.path_c,'C.csv');assert.equal(checkBody.options.alignment_mode,'check');assert.equal(checkBody.options.low,1);assert.equal(h.el('#alignmentChoiceDialog').open,false);assert.equal(h.el('#loadingOverlay').open,true);assert.equal(h.requests.filter(r=>r.url==='/api/merge').length,1);
+ h.el('#clearMergeC').onclick();assert.equal(h.el('#mergePathC').value,'');
+ h=harness();h.el('#mergePathA').value='A.csv';h.el('#mergePathB').value='B.csv';h.el('#mergePathC').value='C.csv';
+ const refineTask=h.el('#mergeCaptures').onclick();await flush();h.el('#alignmentRefineB').onclick();await refineTask;await flush();
+ assert.equal(JSON.parse(h.requests.find(r=>r.url==='/api/merge').options.body).options.alignment_mode,'refine');assert.equal(h.el('#alignmentChoiceDialog').open,false);assert.equal(h.el('#loadingOverlay').open,true);assert(h.el('#loadingMessage').textContent.includes('Importing'));
+ vm.runInContext("summary={options:{alignment_mode:'refine'}}",h.context);assert.equal(vm.runInContext('options().alignment_mode',h.context),'refine');
+ for (const cancel of ['button','escape','close']) {
+  h=harness();h.el('#mergePathA').value='A.csv';h.el('#mergePathB').value='B.csv';h.el('#mergePathC').value='C.csv';
+  const cancelled=h.el('#mergeCaptures').onclick();await flush();assert.equal(h.el('#alignmentChoiceDialog').open,true);
+  if(cancel==='button')h.el('#alignmentChoiceCancel').onclick();
+  if(cancel==='escape'){let prevented=false;h.el('#alignmentChoiceDialog').emit('cancel',{preventDefault(){prevented=true}});assert.equal(prevented,true)}
+  if(cancel==='close')h.el('#alignmentChoiceDialog').close();
+  await cancelled;assert.equal(h.el('#alignmentChoiceDialog').open,false);assert.equal(h.el('#loadingOverlay').open,false);assert.equal(h.el('#mergeCaptures').disabled,false);assert.equal(h.el('#jobStatus').textContent,'Merge cancelled');assert(!h.requests.some(r=>r.url==='/api/merge'));
+ }
+ h=harness();h.el('#mergePathA').value='A.csv';h.el('#mergePathB').value='B.csv';h.el('#mergePathC').value='';vm.runInContext("summary={options:{alignment_mode:'refine'}}",h.context);await h.el('#mergeCaptures').onclick();await flush();
+ assert.equal(h.el('#alignmentChoiceDialog').open,false);const withoutReference=JSON.parse(h.requests.find(r=>r.url==='/api/merge').options.body);assert.equal(withoutReference.path_c,null);assert.equal(withoutReference.options.alignment_mode,'check');assert.equal(h.el('#loadingOverlay').open,true);
+ h=harness();h.el('#mergePathA').value='';await h.el('#mergeCaptures').onclick();assert(!h.requests.some(r=>r.url==='/api/merge'));assert.equal(h.el('#loadingOverlay').open,false);assert.equal(h.el('#alignmentChoiceDialog').open,false);
+ h=harness();vm.runInContext("var mergeFixture={sources:['A.csv','B.csv'],retained_samples:1000,offset_samples:2,matched_z:3,max_z_mismatch_samples:4,alignment_check:{source:'C.csv',status:'match',note:'Relative phase only'},refinement:{applied:true,source:'C.csv',target_phase_degrees:-84.2}};renderMergeStatus(mergeFixture)",h.context);
+ assert(h.el('#mergeStatus').textContent.includes('B TIMING REFINED from C.csv'));assert(h.el('#mergeStatus').textContent.includes('downloaded CSV contain the adjusted B timing'));assert(h.el('#alignmentStatus').textContent.startsWith('Reference-fit result'));assert(h.el('#alignmentStatus').textContent.includes('constructed fit, not independent verification'));assert.equal(h.el('#alignmentStatus').style.color,'#ffd38b');
+ vm.runInContext('delete mergeFixture.refinement;renderMergeStatus(mergeFixture)',h.context);assert(!h.el('#mergeStatus').textContent.includes('B TIMING REFINED'));assert(h.el('#alignmentStatus').textContent.startsWith('A/B alignment check'));
+ h=harness();vm.runInContext("renderPulseCounts({id:'test',error_count:2,options:{reference:true},diagnostics:{reference_ppr:8192},pulse_counts:{missing_total:5,revolutions:2,offset:0,next_offset:null,rows:[{revolution:1,total:3,missing:{A:3,B:0}},{revolution:2,total:2,missing:{A:2,B:0}}]}})",h.context);
+ assert(h.el('#missedPulses').innerHTML.includes('5 missing pulses'));
+ assert(h.el('#missedPulses').innerHTML.includes('<li>Revolution 1: <b>3 missing pulses</b> (A: 3, B: 0)</li>'));
+ assert(h.el('#missedPulses').innerHTML.includes('Revolution 2'));
+ h=harness();h.el('#followReplay').checked=true;
+ vm.runInContext("summary={start:0,end:10};start=2;end=3;playTime=5;playing=true;var followCalls=0;plot=async()=>{followCalls++}",h.context);
+ await vm.runInContext('followReplayView()',h.context);assert.equal(vm.runInContext('start',h.context),4.5);assert.equal(vm.runInContext('end',h.context),5.5);
+ vm.runInContext('playTime=9.9',h.context);await vm.runInContext('followReplayView()',h.context);assert.equal(vm.runInContext('start',h.context),9);assert.equal(vm.runInContext('end',h.context),10);
+ vm.runInContext('playTime=0',h.context);await vm.runInContext('followReplayView()',h.context);assert.equal(vm.runInContext('start',h.context),0);assert.equal(vm.runInContext('end',h.context),1);
+ vm.runInContext('playing=false;playTime=4',h.context);await vm.runInContext('followReplayView()',h.context);assert.equal(vm.runInContext('followCalls',h.context),3);
+ vm.runInContext('playing=true',h.context);h.el('#followReplay').checked=false;await vm.runInContext('followReplayView()',h.context);assert.equal(vm.runInContext('followCalls',h.context),3);
+ h.el('#followReplay').checked=true;vm.runInContext('start=0;end=10',h.context);await vm.runInContext('followReplayView()',h.context);assert.equal(vm.runInContext('followCalls',h.context),3);
+ vm.runInContext("summary={start:0,end:10};job='old';playing=true;playGeneration=8;playTime=3",h.context);await vm.runInContext('position(null,.1,7)',h.context);assert.equal(vm.runInContext('playTime',h.context),3);
+ vm.runInContext('pause()',h.context);assert.equal(vm.runInContext('playGeneration',h.context),9);
+ h=harness();Object.assign(h.el('#waveformNavigator'),{getBoundingClientRect:()=>({width:1000}),setPointerCapture(){},hasPointerCapture:()=>true,releasePointerCapture(){}});
+ vm.runInContext("summary={start:0,end:10};start=2;end=3;playing=true;var navPlots=0;drawNavigator=()=>{};plot=async()=>{navPlots++}",h.context);
+ h.el('#waveformNavigator').onpointerdown({offsetX:515.5,pointerId:1});assert.equal(vm.runInContext('start',h.context),4.5);assert.equal(vm.runInContext('end',h.context),5.5);assert.equal(vm.runInContext('playing',h.context),false);
+ h.el('#waveformNavigator').onpointermove({offsetX:609.6});assert(Math.abs(vm.runInContext('start',h.context)-5.5)<1e-9);assert.equal(vm.runInContext('navPlots',h.context),0);
+ h.el('#waveformNavigator').onpointerup({pointerId:1});assert.equal(vm.runInContext('navPlots',h.context),1);
+ h.el('#waveformNavigator').onkeydown({key:'End',preventDefault(){}});assert.equal(vm.runInContext('start',h.context),9);assert.equal(vm.runInContext('end',h.context),10);
+ h.el('#waveformNavigator').onkeydown({key:'Home',preventDefault(){}});assert.equal(vm.runInContext('start',h.context),0);assert.equal(vm.runInContext('end',h.context),1);
+ h.el('#waveformNavigator').onpointerdown({offsetX:700,pointerId:2});h.el('#waveformNavigator').onpointercancel();assert.equal(vm.runInContext('start',h.context),0);assert.equal(vm.runInContext('end',h.context),1);
+ h.el('#navigatorNext').onclick();assert.equal(vm.runInContext('start',h.context),.8);assert.equal(vm.runInContext('end',h.context),1.8);
+ h.el('#navigatorPrevious').onclick();assert.equal(vm.runInContext('start',h.context),0);assert.equal(vm.runInContext('end',h.context),1);
+ h=harness();await flush();assert.equal(h.el('#cacheSize').textContent,'Cache: 2.00 KiB');assert.equal(h.el('#deleteCache').disabled,false);
+ assert.equal(vm.runInContext('cacheSizeLabel(0)',h.context),'0 B');assert.equal(vm.runInContext('cacheSizeLabel(1024**3)',h.context),'1.00 GiB');
+ vm.runInContext("pendingAnalysis=true;syncCacheControls()",h.context);assert.equal(h.el('#deleteCache').disabled,true);assert(h.el('#deleteCache').title.includes('Wait'));
+ await h.el('#deleteCache').onclick();assert(!h.requests.some(r=>r.url==='/api/clear-cache'));
+ vm.runInContext('pendingAnalysis=false',h.context);h.setCache({bytes:4096,files:2,busy:true,clearing:false,revision:'cache-1'});await vm.runInContext('refreshCache()',h.context);assert.equal(h.el('#deleteCache').disabled,true);
+ h.setCache({bytes:4096,files:2,busy:false,clearing:false,revision:'cache-1'});await vm.runInContext('refreshCache()',h.context);
+ vm.runInContext("summary={id:'loaded'};job='loaded';view={};navigatorData={};playing=true",h.context);await h.el('#deleteCache').onclick();assert(h.requests.some(r=>r.url==='/api/clear-cache'));assert.equal(h.reloads(),1);assert.equal(vm.runInContext('summary',h.context),null);assert.equal(vm.runInContext('job',h.context),null);assert.equal(vm.runInContext('navigatorData',h.context),null);assert.equal(vm.runInContext('playing',h.context),false);assert.equal(h.el('#cacheSize').textContent,'Cache: 0 B');assert(h.storage.get('encoder-cache-notice').includes('Cache deleted'));
+ h=harness();await flush();h.setClearError('Wait for active operations');await h.el('#deleteCache').onclick();assert.equal(h.reloads(),0);assert.equal(h.el('#loadingOverlay').open,false);assert.equal(h.el('#jobStatus').textContent,'Wait for active operations');
+ h=harness();await flush();h.setCache({bytes:0,files:0,busy:false,clearing:false,revision:'cache-other'});await vm.runInContext('refreshCache()',h.context);assert.equal(h.reloads(),1);assert(h.storage.get('encoder-cache-notice').includes('another tab'));
+ h=harness();h.el('#recordingFormat').value='bin';h.el('#recordingFormat').onchange();assert.equal(h.el('#csvInputs').hidden,true);assert.equal(h.el('#binInputs').hidden,false);
+ for(let i=0;i<6;i++)h.el('#binPath'+i).value='';h.el('#binPath0').value='A.BIN';h.el('#binPath4').value='Z.BIN';h.el('#binAlign90').checked=true;
+ await h.el('#loadBin').onclick();await flush();const binRequest=h.requests.find(r=>r.url==='/api/open-bin');assert.deepEqual(JSON.parse(binRequest.options.body).channels,{A:'A.BIN',Z:'Z.BIN'});assert.equal(JSON.parse(binRequest.options.body).options.bin_align_90,true);
+ h.setError('BIN channels must have matching sample counts, sample rates and capture start times');await vm.runInContext('poll()',h.context);assert.equal(h.el('#binError').hidden,false);assert.match(h.el('#binError').textContent,/matching sample/);
+ h.el('#recordingFormat').value='csv';h.el('#recordingFormat').onchange();assert.equal(h.el('#binInputs').hidden,true);assert.equal(h.el('#csvInputs').hidden,false);
+ h=harness();vm.runInContext("summary={start:0,end:10};start=0;end=10;view={faults:{events:[]}};plot=()=>{}",h.context);
+ for(const id of ['#chart','#rxChart']) {
+ const chart=h.el(id);chart.getBoundingClientRect=()=>({left:100,top:200,width:555,height:300});chart.setPointerCapture=()=>{};chart.hasPointerCapture=()=>true;chart.releasePointerCapture=()=>{};
+ chart.onpointerdown({clientX:195,button:0,pointerId:1});chart.onpointermove({clientX:395});
+ assert.equal(h.el('#zoomSelection').hidden,false);assert.equal(h.el('#zoomSelection').style.left,'195px');assert.equal(h.el('#zoomSelection').style.width,'200px');assert.equal(h.el('#zoomSelection').style.height,'265px');
+ chart.onpointercancel();assert.equal(h.el('#zoomSelection').hidden,true);assert.equal(vm.runInContext('start',h.context),0);
+ chart.onpointerdown({clientX:395,button:0,pointerId:1});chart.onpointermove({clientX:195});assert.equal(h.el('#zoomSelection').style.left,'195px');
+ chart.onpointerup({clientX:195,pointerId:1});assert.equal(h.el('#zoomSelection').hidden,true);assert.equal(vm.runInContext('start',h.context),1);assert.equal(vm.runInContext('end',h.context),5);
+ vm.runInContext('start=0;end=10',h.context);
+ }
+ h=harness();for(let i=0;i<6;i++){await h.el('#browseBin'+i).onclick();}assert.equal(h.requests.filter(r=>r.url==='/api/browse'&&JSON.parse(r.options.body).kind==='bin').length,6);
+ h=harness();h.el('#recordingFormat').value='csv-channels';h.el('#recordingFormat').onchange();assert.equal(h.el('#csvInputs').hidden,true);assert.equal(h.el('#binInputs').hidden,true);assert.equal(h.el('#csvChannelInputs').hidden,false);
+ for(let i=0;i<6;i++){h.el('#csvChannelPath'+i).value='';await h.el('#browseCsvChannel'+i).onclick();}
+ assert.equal(h.requests.filter(r=>r.url==='/api/browse'&&JSON.parse(r.options.body).kind==='csv-channel').length,6);
+ h.el('#csvChannelPath0').value='a.csv';h.el('#csvChannelPath2').value='b.csv';await h.el('#loadCsvChannels').onclick();await flush();
+ assert.deepEqual(JSON.parse(h.requests.find(r=>r.url==='/api/open-csv-channels').options.body).channels,{A:'a.csv',B:'b.csv'});
+ h.setError('Single-channel CSV time bases do not match');await vm.runInContext('poll()',h.context);assert.equal(h.el('#csvChannelError').hidden,false);assert.match(h.el('#csvChannelError').textContent,/time bases/);
+ h.el('#clearCsvChannel0').onclick();assert.equal(h.el('#csvChannelPath0').value,'');
+ h=harness();vm.runInContext("renderPhaseAnalysis({available:true,outliers:1,cycles:100,typical_degrees:90,tolerance_degrees:1,max_deviation_degrees:20,excluded_cycles:0,note:'test'})",h.context);
+ assert.equal(h.el('#nextPhaseOutlier').disabled,false);assert(h.el('#phaseAnalysisDetails').textContent.includes('1 unusual cycles'));assert.equal(h.el('#phaseAnalysisDetails').style.color,'#ff9aab');
+ vm.runInContext("summary={phase_analysis:{outliers:1}};job='phase-job'",h.context);await h.el('#nextPhaseOutlier').onclick();assert(h.requests.some(r=>r.url.includes('kind=A%2FB%20phase%20outlier')));
+ vm.runInContext("selectedFault={kind:'A/B phase outlier',pulse:40,phase_degrees:110,typical_degrees:90,deviation_degrees:20,tolerance_degrees:1};showFaultDetails()",h.context);assert(h.el('#phaseOutlierDetails').textContent.includes('cycle 40'));assert(h.el('#errorNavStatus').textContent.includes('deviation 20'));
+ vm.runInContext('renderPhaseAnalysis(null)',h.context);assert.equal(h.el('#nextPhaseOutlier').disabled,true);
+ h=harness();for(let i=0;i<6;i++)h.el('#csvChannelPath'+i).value='';h.el('#csvChannelPath0').value='a.csv';h.el('#csvChannelPath2').value='b.csv';
+ await h.el('#loadCsvChannels').onclick();await flush();assert.equal(h.el('#loadingOverlay').open,true);assert.equal(h.el('#loadingTitle').textContent,'Loading CSV channels');assert.equal(h.el('#loadingCancel').disabled,false);
+ vm.runInContext("api=async()=>({progress:.16,stage:'Reading CSV channel B (2 of 2)',ready:false});",h.context);await vm.runInContext('poll()',h.context);assert.equal(h.el('#loadingPercent').textContent,'16%');assert(h.el('#loadingMessage').textContent.includes('channel B'));assert.equal(h.el('#loadingOverlay').open,true);
+ vm.runInContext("api=async()=>({progress:1,stage:'Complete',ready:true,start:0,end:1,window:1,requested_window:1,options:{window:1}});renderSummary=()=>{};refreshCache=()=>{};var finishCsvPlot;plot=()=>new Promise(resolve=>{finishCsvPlot=resolve})",h.context);
+ const finalCsvPoll=vm.runInContext('poll()',h.context);await flush();assert.equal(h.el('#loadingOverlay').open,true);assert(h.el('#loadingMessage').textContent.includes('Preparing waveforms'));vm.runInContext('finishCsvPlot()',h.context);await finalCsvPoll;assert.equal(h.el('#loadingOverlay').open,false);
+ h=harness();vm.runInContext("summary={phase_analysis:{outliers:2},start:0,end:10};selectedFault={kind:'A/B phase outlier'};draw=()=>{}",h.context);
+ h.el('#hidePhaseFaults').checked=true;h.el('#hidePhaseFaults').onchange();assert.equal(vm.runInContext('selectedFault',h.context),null);assert.equal(h.el('#nextPhaseOutlier').disabled,true);
+ await h.el('#zoomErrors').onclick();assert(h.requests.some(r=>r.url.includes('exclude_kind=A%2FB%20phase%20outlier')));
+ h.el('#hidePhaseFaults').checked=false;h.el('#hidePhaseFaults').onchange();assert.equal(h.el('#nextPhaseOutlier').disabled,false);
+ h.el('#phaseTolerance').value='20';h.el('#phaseTolerance').oninput();assert.equal(h.el('#phaseToleranceValue').textContent,'20%');assert.equal(vm.runInContext('options().phase_tolerance_percent',h.context),20);
+ assert(!h.requests.some(r=>r.url==='/api/reanalyse'));h.el('#phaseTolerance').onchange();assert.equal(h.el('#loadingOverlay').open,false);assert(h.timers.length>0);
+ h=harness();vm.runInContext("view={faults:{events:[{id:1,kind:'short raw pulse candidate',signal_domain:'raw',channel:'A'},{id:2,kind:'A/B phase outlier',signal_domain:'receiver',channel:'B'}]},receiver_faults:{events:[{id:2,kind:'A/B phase outlier',signal_domain:'receiver',channel:'B'}]}};selectedFault={id:3,kind:'short raw pulse candidate',signal_domain:'raw',channel:'-A'}",h.context);
+ assert.deepEqual(Array.from(vm.runInContext('faultsForDiagram(true).map(e=>e.id)',h.context)),[2]);assert.deepEqual(Array.from(vm.runInContext('faultsForDiagram(false).map(e=>e.id)',h.context)),[1,2,3]);
+ assert.equal(vm.runInContext("isReceiverFault({kind:'unknown',channel:'A'})",h.context),false);assert.equal(vm.runInContext("isReceiverFault({kind:'short raw pulse candidate',channel:'A'})",h.context),false);assert.equal(vm.runInContext("isReceiverFault({kind:'duty outside 45\u201355%',channel:'Rx A'})",h.context),true);
+ h.el('#hidePhaseFaults').checked=true;assert.equal(vm.runInContext('faultsForDiagram(true).length',h.context),0);
+ h=harness();
+ vm.runInContext("var noisyScale=waveformVoltageScale([[0,0,[-.6],[5.2]],[1,1,[4.8],[6.5]]],0)",h.context);
+ const noisy=vm.runInContext('noisyScale',h.context);assert(noisy.min<-.6);assert(noisy.min+noisy.range>6.5);
+ // The actual voltage-to-pixel mapping keeps both measured extremes clear of lane boundaries.
+ const lane=100,y=15,top=y+lane-8-(6.5-noisy.min)/noisy.range*(lane-20),bottom=y+lane-8-(-.6-noisy.min)/noisy.range*(lane-20);
+ assert(top>y+15);assert(bottom<y+lane-10);assert(top<bottom);
+ const dc=vm.runInContext('waveformVoltageScale([[0,0,[5],[5]]],0)',h.context);assert(dc.min<5&&dc.min+dc.range>5);
+ h=harness();await h.el('#testBearingData').onclick();await flush();const bearingRequest=JSON.parse(h.requests.find(r=>r.url==='/api/generate').options.body);assert.equal(bearingRequest.kind,'bearing');assert.equal('seed' in bearingRequest,false);assert.equal(h.el('#expectedPprEnabled').checked,true);
+ h=harness();h.el('#comedyButton').onclick();assert.equal(h.el('#comedyDialog').open,true);const firstJoke=h.el('#comedyJoke').textContent;assert(firstJoke.length>20);h.el('#closeComedy').onclick();assert.equal(h.el('#comedyDialog').open,false);h.el('#comedyButton').onclick();assert.notEqual(h.el('#comedyJoke').textContent,firstJoke);assert(!h.requests.some(r=>r.url==='/api/generate'));
+console.log('UI checks passed: loading, merge choice/check/refine/cancel/snapshots/provenance, counts, replay, navigator and cache handling.');
+})().catch(e=>{console.error(e);process.exitCode=1});
