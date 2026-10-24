@@ -2,7 +2,7 @@
 
 ![Pulse Scope IO logo](pulse-scope-io-logo.svg)
 
-**Pulse Scope IO Where Every Pulse Counts!**
+**This is a fully featured version that is quicker and more powerful than the online version. This version can handle files of up to 10 GB in size and supports BIN files**
 
 A Python-backed, browser-based tool for examining incremental encoder captures: A, −A, B, −B, Z and −Z. Import recordings, analyse the complete file, inspect reconstructed RS-422 receiver outputs and replay count-derived azimuth. Processing runs locally.
 
